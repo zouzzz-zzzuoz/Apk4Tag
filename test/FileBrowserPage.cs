@@ -17,6 +17,11 @@ namespace test
     /// </summary>
     public class FileBrowserPage : ContentPage
     {
+        const string LastBrowsedFolderKey = "LastBrowsedFolder";
+        const string LastSearchTextKey = "LastFileBrowserSearch";
+        const string SearchHistoryKey = "FileBrowserSearchHistory";
+        const int MaxSearchHistoryItems = 5;
+
         readonly TaskCompletionSource<string?> _tcs;
         string _currentDir = "";
         readonly ListView _fileList;
@@ -30,6 +35,7 @@ namespace test
         Image _previewImage;
         Label _previewLabel;
         Button _previewButton;
+        Button _historyButton;
         // supported file extensions
         static readonly HashSet<string> _supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -74,15 +80,6 @@ namespace test
             };
             backButton.Clicked += OnBackClicked;
 
-            var openButton = new Button
-            {
-                Text = "Ouvrir",
-                FontSize = 13,
-                Padding = new Thickness(8,4),
-                HorizontalOptions = LayoutOptions.End
-            };
-            openButton.Clicked += OnOpenClicked;
-
             var cancelButton = new Button
             {
                 Text = "Annuler",
@@ -96,12 +93,18 @@ namespace test
             _fileList = new ListView
             {
                 HasUnevenRows = true,
+                SeparatorVisibility = SeparatorVisibility.Default,
                 ItemTemplate = new DataTemplate(() =>
                 {
-                    var nameLabel = new Label { FontSize = 14, VerticalOptions = LayoutOptions.Center };
-                    nameLabel.SetBinding(Label.TextProperty, "DisplayName");
+                    var nameLabel = new Label
+                    {
+                        FontSize = 14,
+                        VerticalOptions = LayoutOptions.Center,
+                        LineBreakMode = LineBreakMode.TailTruncation,
+                        TextColor = Colors.Black
+                    };
+                    nameLabel.SetBinding(Label.TextProperty, nameof(FileItem.DisplayName));
 
-                    // Mini preview inside each row (GraphicsView for .tag, Image for images)
                     var miniPreview = new GraphicsView
                     {
                         HeightRequest = 110,
@@ -118,7 +121,8 @@ namespace test
                         VerticalOptions = LayoutOptions.Center,
                         Aspect = Aspect.AspectFit,
                         IsVisible = false,
-                        InputTransparent = true
+                        InputTransparent = true,
+                        BackgroundColor = Color.FromArgb("#F0F0F0")
                     };
 
                     var textCol = new VerticalStackLayout
@@ -135,33 +139,18 @@ namespace test
                             new ColumnDefinition(new GridLength(145)),
                             new ColumnDefinition(GridLength.Star)
                         },
-                        ColumnSpacing = 6,
+                        ColumnSpacing = 10,
                         Padding = new Thickness(4, 6),
                         Children = { miniPreview, miniImage, textCol }
                     };
-                    // small per-row preview button (fallback to native picker when direct file access fails)
-                    var rowPreviewBtn = new Button
-                    {
-                        Text = "🔍",
-                        FontSize = 12,
-                        WidthRequest = 40,
-                        HeightRequest = 36,
-                        HorizontalOptions = LayoutOptions.End,
-                        VerticalOptions = LayoutOptions.Center,
-                        IsVisible = false
-                    };
-                    row.Children.Add(rowPreviewBtn);
-                    Grid.SetColumn(rowPreviewBtn, 1);
                     Grid.SetColumn(miniPreview, 0);
                     Grid.SetColumn(miniImage, 0);
                     Grid.SetColumn(textCol, 1);
 
                     var cell = new ViewCell { View = row };
-
-                    // Lazy-load mini preview when the cell scrolls into view
                     cell.BindingContextChanged += async (s, ev) =>
                     {
-                        if (cell.BindingContext is not FileItem fi || fi.IsDirectory)
+                        if (cell.BindingContext is not FileItem fi)
                         {
                             miniPreview.Drawable = null;
                             miniPreview.IsVisible = false;
@@ -190,21 +179,18 @@ namespace test
                                 miniPreview.Drawable = new TagPreviewDrawable { Model = fi.PreviewModel };
                                 miniPreview.IsVisible = true;
                                 miniPreview.Invalidate();
-                                rowPreviewBtn.IsVisible = false;
                                 return;
                             }
 
                             if (fi.PreviewLoading)
                             {
                                 miniPreview.IsVisible = true;
-                                rowPreviewBtn.IsVisible = false;
                                 return;
                             }
 
                             fi.PreviewLoading = true;
                             miniPreview.IsVisible = true;
                             miniPreview.Drawable = null;
-                            rowPreviewBtn.IsVisible = false;
 
                             var filePath = fi.FullPath;
                             TagModel? model = null;
@@ -226,16 +212,17 @@ namespace test
                             catch { model = null; }
 
                             fi.PreviewModel = model;
+                            fi.PreviewLoading = false;
                             if (cell.BindingContext == fi && model != null)
                             {
                                 miniPreview.Drawable = new TagPreviewDrawable { Model = model };
+                                miniPreview.IsVisible = true;
                                 miniPreview.Invalidate();
-                                rowPreviewBtn.IsVisible = false;
                             }
                             else
                             {
-                                // If parsing failed (likely permission/content URI), show row preview button so user can pick via native picker
-                                rowPreviewBtn.IsVisible = true;
+                                miniPreview.Drawable = null;
+                                miniPreview.IsVisible = false;
                             }
                             return;
                         }
@@ -252,8 +239,16 @@ namespace test
                 VerticalOptions = LayoutOptions.FillAndExpand
             };
             _fileList.ItemSelected += OnFileSelected;
-
-            // wire selection changed to update preview (UpdatePreview defined as class method)
+            // Open file on tap of the list item (no separate 'Ouvrir' button)
+            _fileList.ItemTapped += async (s, ev) =>
+            {
+                if (ev.Item is FileItem fi && !fi.IsDirectory)
+                {
+                    // set result and close
+                    _tcs.TrySetResult(fi.FullPath);
+                    await Navigation.PopModalAsync();
+                }
+            };
 
             _searchBar = new SearchBar
             {
@@ -263,14 +258,23 @@ namespace test
                 Margin = new Thickness(4, 0),
                 BackgroundColor = Color.FromArgb("#E0E0E0")
             };
+            _searchBar.Text = Preferences.Get(LastSearchTextKey, string.Empty);
             _searchBar.TextChanged += OnSearchTextChanged;
+            // history is shown via a dedicated button next to the search box
+            _historyButton = new Button
+            {
+                Text = "Historique",
+                FontSize = 13,
+                Padding = new Thickness(8, 4),
+                HorizontalOptions = LayoutOptions.End
+            };
+            _historyButton.Clicked += OnHistoryClicked;
 
             var topBar = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitionCollection
                 {
                     new ColumnDefinition(GridLength.Star),
-                    new ColumnDefinition(GridLength.Auto),
                     new ColumnDefinition(GridLength.Auto),
                     new ColumnDefinition(GridLength.Auto)
                 },
@@ -279,88 +283,42 @@ namespace test
             };
             topBar.Add(_rootPicker, 0);
             topBar.Add(backButton, 1);
-            topBar.Add(openButton, 2);
-            topBar.Add(cancelButton, 3);
+            topBar.Add(cancelButton, 2);
 
-            // Preview controls (created here so they can be referenced later)
-            _previewLabel = new Label { FontSize = 14, TextColor = Colors.Black, LineBreakMode = LineBreakMode.TailTruncation };
-            _previewView = new GraphicsView { HeightRequest = 300, WidthRequest = 300, Background = new SolidColorBrush(Color.FromArgb("#F8F8F8")), IsVisible = false };
-            _previewImage = new Image { HeightRequest = 300, WidthRequest = 300, Aspect = Aspect.AspectFit, IsVisible = false };
-            _previewButton = new Button { Text = "Prévisualiser (sélecteur natif)", IsVisible = false, FontSize = 12 };
-            _previewButton.Clicked += async (s, ev) =>
-            {
-                try
-                {
-                    // Ask user to pick the same file via native picker; copy to cache and parse for preview
-                    var result = await FilePicker.Default.PickAsync(new PickOptions { PickerTitle = "Sélectionnez le même fichier pour prévisualiser" });
-                    if (result == null) return;
-                    var dest = Path.Combine(FileSystem.CacheDirectory, result.FileName ?? Guid.NewGuid().ToString());
-                    using (var src = await result.OpenReadAsync())
-                    using (var dst = File.Create(dest))
-                    {
-                        await src.CopyToAsync(dst);
-                    }
+            _previewLabel = new Label { IsVisible = false };
+            _previewView = new GraphicsView { IsVisible = false };
+            _previewImage = new Image { IsVisible = false };
+            _previewButton = new Button { IsVisible = false };
 
-                    // parse lightweight and update preview
-                    TagModel? model = null;
-                    try
-                    {
-                        using var fs = File.OpenRead(dest);
-                        model = TagParser.ParseLightweight(fs);
-                    }
-                    catch { }
-
-                    if (model != null && _selectedItem != null)
-                    {
-                        _selectedItem.PreviewModel = model;
-                        _selectedItem.PreviewLoading = false;
-                        _previewButton.IsVisible = false;
-                        _previewImage.IsVisible = false;
-                        _previewView.Drawable = new TagPreviewDrawable { Model = model };
-                        _previewView.IsVisible = true;
-                        _previewView.Invalidate();
-                    }
-                }
-                catch { }
-            };
-
-            // Two-column view: file list (left) and preview (right)
             var mainGrid = new Grid
             {
                 RowDefinitions = new RowDefinitionCollection
                 {
-                    new RowDefinition(GridLength.Auto),    // root picker + buttons
-                    new RowDefinition(GridLength.Auto),    // path
-                    new RowDefinition(GridLength.Auto),    // search bar
-                    new RowDefinition(GridLength.Star),    // content area
+                    new RowDefinition(GridLength.Auto),
+                    new RowDefinition(GridLength.Auto),
+                    new RowDefinition(GridLength.Auto),
+                    new RowDefinition(GridLength.Star),
                 },
+                RowSpacing = 2
+            };
+
+            mainGrid.Add(topBar, 0, 0);
+            mainGrid.Add(_pathLabel, 0, 1);
+            // place search bar and history button on the same row
+            var searchRow = new Grid
+            {
                 ColumnDefinitions = new ColumnDefinitionCollection
                 {
                     new ColumnDefinition(GridLength.Star),
-                    new ColumnDefinition(new GridLength(320))
+                    new ColumnDefinition(GridLength.Auto)
                 },
-                RowSpacing = 2,
-                ColumnSpacing = 6
+                ColumnSpacing = 4,
+                Padding = new Thickness(4, 0)
             };
-
-            // Left side controls
-            mainGrid.Add(topBar, 0, 0);
-            Grid.SetColumnSpan(topBar, 2);
-            mainGrid.Add(_pathLabel, 0, 1);
-            Grid.SetColumnSpan(_pathLabel, 2);
-            mainGrid.Add(_searchBar, 0, 2);
-            Grid.SetColumnSpan(_searchBar, 2);
-
-            // File list on the left
+            searchRow.Add(_searchBar, 0);
+            searchRow.Add(_historyButton, 1);
+            mainGrid.Add(searchRow, 0, 2);
             mainGrid.Add(_fileList, 0, 3);
-
-            // Preview stack on the right
-            var previewStack = new VerticalStackLayout { Spacing = 6, Padding = new Thickness(6) };
-            previewStack.Children.Add(_previewLabel);
-            previewStack.Children.Add(_previewView);
-            previewStack.Children.Add(_previewImage);
-            previewStack.Children.Add(_previewButton);
-            mainGrid.Add(previewStack, 1, 3);
 
             Content = mainGrid;
 
@@ -370,100 +328,20 @@ namespace test
         protected override void OnAppearing()
         {
             base.OnAppearing();
-            // Re-check permissions and refresh roots when returning from settings
             if (_roots.Count == 0)
                 DetectRoots();
+            else
+                ApplySearchFilter(_searchBar.Text);
         }
 
         void UpdatePreview(FileItem? item)
         {
-            try
-            {
-                _selectedItem = item;
-                if (item == null)
-                {
-                    if (_previewLabel != null) _previewLabel.Text = string.Empty;
-                    if (_previewView != null) { _previewView.Drawable = null; _previewView.IsVisible = false; }
-                    if (_previewImage != null) { _previewImage.Source = null; _previewImage.IsVisible = false; }
-                    return;
-                }
-
-                if (_previewLabel != null) _previewLabel.Text = item.DisplayName;
-
-                if (item.IsImageFile)
-                {
-                    if (_previewView != null) { _previewView.Drawable = null; _previewView.IsVisible = false; }
-                    if (_previewImage != null)
-                    {
-                        try { _previewImage.Source = ImageSource.FromFile(item.FullPath); }
-                        catch { _previewImage.Source = null; }
-                        _previewImage.IsVisible = true;
-                    }
-                    return;
-                }
-
-                if (item.IsTagFile)
-                {
-                    if (_previewImage != null) { _previewImage.Source = null; _previewImage.IsVisible = false; }
-
-                    if (item.PreviewModel != null)
-                    {
-                        if (_previewView != null) { _previewView.Drawable = new TagPreviewDrawable { Model = item.PreviewModel }; _previewView.IsVisible = true; _previewView.Invalidate(); }
-                        if (_previewButton != null) _previewButton.IsVisible = false;
-                        return;
-                    }
-
-                    if (!item.PreviewLoading)
-                    {
-                        item.PreviewLoading = true;
-                        if (_previewView != null) { _previewView.IsVisible = true; _previewView.Drawable = null; }
-                        _ = Task.Run(() =>
-                        {
-                            TagModel? model = null;
-                            try
-                            {
-                                using var s = File.OpenRead(item.FullPath);
-                                model = TagParser.ParseLightweight(s);
-                            }
-                            catch { }
-                            item.PreviewModel = model;
-                            item.PreviewLoading = false;
-                            MainThread.BeginInvokeOnMainThread(() =>
-                            {
-                                if (_selectedItem == item && model != null && _previewView != null)
-                                {
-                                    _previewView.Drawable = new TagPreviewDrawable { Model = model };
-                                    _previewView.Invalidate();
-                                    if (_previewButton != null) _previewButton.IsVisible = false;
-                                }
-                                else
-                                {
-                                    // If parsing failed (likely due to content URI / permission), show button to use native picker
-                                    if (_previewButton != null)
-                                    {
-                                        _previewButton.IsVisible = true;
-                                    }
-                                }
-                            });
-                        });
-                    }
-                    return;
-                }
-
-                if (_previewView != null) { _previewView.Drawable = null; _previewView.IsVisible = false; }
-                if (_previewImage != null) { _previewImage.Source = null; _previewImage.IsVisible = false; }
-            }
-            catch { }
+            _selectedItem = item;
         }
 
         async void OnOpenClicked(object? s, EventArgs ev)
         {
             if (_selectedItem == null) return;
-            if (_selectedItem.IsDirectory)
-            {
-                NavigateTo(_selectedItem.FullPath);
-                return;
-            }
             _tcs.TrySetResult(_selectedItem.FullPath);
             await Navigation.PopModalAsync();
         }
@@ -471,14 +349,13 @@ namespace test
         void DetectRoots()
         {
             _roots.Clear();
+            _rootPicker.Items.Clear();
 
 #if ANDROID
             try
             {
-                // Get all external storage directories (SD card + internal emulated)
                 var ctx = Android.App.Application.Context;
                 var externalDirs = ctx.GetExternalFilesDirs(null);
-                // Collect unique root paths, preferring SD card first
                 var sdPaths = new List<string>();
                 var internalPaths = new List<string>();
 
@@ -487,8 +364,6 @@ namespace test
                     foreach (var dir in externalDirs)
                     {
                         if (dir == null) continue;
-                        // The path looks like /storage/XXXX-XXXX/Android/data/pkg/files
-                        // We want the root: /storage/XXXX-XXXX
                         var full = dir.AbsolutePath;
                         var androidIdx = full.IndexOf("/Android/", StringComparison.OrdinalIgnoreCase);
                         if (androidIdx > 0)
@@ -497,7 +372,6 @@ namespace test
                         bool isRemovable = false;
                         try
                         {
-                            // Internal emulated storage is under /storage/emulated/; anything else is SD card
                             isRemovable = !full.StartsWith("/storage/emulated", StringComparison.OrdinalIgnoreCase);
                         }
                         catch { }
@@ -509,20 +383,17 @@ namespace test
                     }
                 }
 
-                // SD card first
                 int sdIdx = 1;
                 foreach (var p in sdPaths.Distinct())
                 {
                     _roots.Add(new StorageRoot { Label = $"📂 Carte SD {(sdPaths.Count > 1 ? sdIdx.ToString() : "")}", Path = p });
                     sdIdx++;
                 }
-                // Internal second
                 foreach (var p in internalPaths.Distinct())
                 {
                     _roots.Add(new StorageRoot { Label = "📱 Mémoire interne", Path = p });
                 }
 
-                // Fallback: common Android internal storage path
                 if (_roots.Count == 0)
                 {
                     var envPath = Android.OS.Environment.ExternalStorageDirectory?.AbsolutePath;
@@ -536,7 +407,6 @@ namespace test
 #if WINDOWS
             try
             {
-                // On Windows, list all available drives; removable drives (SD/USB) first
                 var removable = new List<StorageRoot>();
                 var fixedDrives = new List<StorageRoot>();
                 foreach (var drv in DriveInfo.GetDrives())
@@ -554,7 +424,6 @@ namespace test
             catch { }
 #endif
 
-            // Absolute fallback
             if (_roots.Count == 0)
             {
                 var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -567,30 +436,28 @@ namespace test
             foreach (var r in _roots)
                 _rootPicker.Items.Add(r.ToString());
 
-            if (_roots.Count > 0)
+            if (_roots.Count == 0)
+                return;
+
+            var lastDir = Preferences.Get(LastBrowsedFolderKey, "");
+            var selectedRootIndex = 0;
+            var startPath = _roots[0].Path;
+
+            if (!string.IsNullOrEmpty(lastDir) && Directory.Exists(lastDir))
             {
-                var lastDir = Preferences.Get("LastBrowsedFolder", "");
-                if (!string.IsNullOrEmpty(lastDir) && Directory.Exists(lastDir))
+                for (int i = 0; i < _roots.Count; i++)
                 {
-                    // Select the matching root in the picker
-                    for (int i = 0; i < _roots.Count; i++)
+                    if (lastDir.StartsWith(_roots[i].Path, StringComparison.OrdinalIgnoreCase))
                     {
-                        if (lastDir.StartsWith(_roots[i].Path, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _rootPicker.SelectedIndex = i;
-                            break;
-                        }
+                        selectedRootIndex = i;
+                        startPath = lastDir;
+                        break;
                     }
-                    if (_rootPicker.SelectedIndex < 0)
-                        _rootPicker.SelectedIndex = 0;
-                    NavigateTo(lastDir);
-                }
-                else
-                {
-                    _rootPicker.SelectedIndex = 0;
-                    NavigateTo(_roots[0].Path);
                 }
             }
+
+            _rootPicker.SelectedIndex = selectedRootIndex;
+            NavigateTo(startPath);
         }
 
         void OnRootChanged(object? sender, EventArgs e)
@@ -611,13 +478,11 @@ namespace test
 
                 if (result == null)
                 {
-                    // user cancelled
                     _tcs.TrySetResult(null);
                     await Navigation.PopModalAsync();
                     return;
                 }
 
-                // Copy picked content to app cache because on Android FileResult may be a content URI
                 var dest = Path.Combine(FileSystem.CacheDirectory, result.FileName ?? Guid.NewGuid().ToString());
                 using (var src = await result.OpenReadAsync())
                 using (var dst = File.Create(dest))
@@ -630,7 +495,6 @@ namespace test
             }
             catch
             {
-                // ignore and keep the in-app browser as fallback
             }
         }
 #endif
@@ -658,25 +522,33 @@ namespace test
             {
                 _currentDir = path;
                 _pathLabel.Text = path;
-                Preferences.Set("LastBrowsedFolder", path);
+                Preferences.Set(LastBrowsedFolderKey, path);
+                _selectedItem = null;
+                _fileList.SelectedItem = null;
 
                 var items = new List<FileItem>();
 
-                // Directories first (sorted)
+                // List subdirectories first so the user can navigate deeper
                 try
                 {
                     var dirs = Directory.GetDirectories(path)
                         .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase);
                     foreach (var d in dirs)
                     {
-                        var name = Path.GetFileName(d);
-                        if (name.StartsWith(".")) continue; // hide hidden dirs
-                        items.Add(new FileItem { FullPath = d, DisplayName = name, IsDirectory = true, Icon = "📁" });
+                        items.Add(new FileItem
+                        {
+                            FullPath = d,
+                            DisplayName = "📁 " + Path.GetFileName(d),
+                            IsDirectory = true,
+                            Icon = "📁",
+                            IsTagFile = false,
+                            IsImageFile = false
+                        });
                     }
                 }
                 catch { }
 
-                // Files (only supported extensions, sorted)
+                // Then list supported files
                 try
                 {
                     var files = Directory.GetFiles(path)
@@ -685,32 +557,33 @@ namespace test
                     foreach (var f in files)
                     {
                         var ext = Path.GetExtension(f).ToLowerInvariant();
-                        string icon = ext == ".tag" ? "📐" : "🖼";
-
                         items.Add(new FileItem
                         {
                             FullPath = f,
                             DisplayName = Path.GetFileName(f),
                             IsDirectory = false,
-                            Icon = icon,
-                            IsTagFile = (ext == ".tag"),
-                            IsImageFile = (ext != ".tag")
+                            Icon = ext == ".tag" ? "📐" : "🖼",
+                            IsTagFile = ext == ".tag",
+                            IsImageFile = ext != ".tag"
                         });
                     }
                 }
                 catch { }
 
-                _fileList.ItemsSource = items;
                 _allItems = items;
-                _searchBar.Text = string.Empty;
+                ApplySearchFilter(_searchBar.Text);
             }
             catch (UnauthorizedAccessException)
             {
                 _pathLabel.Text = "⚠ Accès refusé : " + path;
+                _allItems = new List<FileItem>();
+                _fileList.ItemsSource = _allItems;
             }
             catch (Exception ex)
             {
                 _pathLabel.Text = "⚠ " + ex.Message;
+                _allItems = new List<FileItem>();
+                _fileList.ItemsSource = _allItems;
             }
         }
 
@@ -721,29 +594,97 @@ namespace test
                 UpdatePreview(null);
                 return;
             }
-            _fileList.SelectedItem = item; // keep visual selection
 
+            // If the user tapped a directory, navigate into it
             if (item.IsDirectory)
             {
+                _fileList.SelectedItem = null;
                 NavigateTo(item.FullPath);
                 return;
             }
 
-            // Update preview pane instead of immediately opening
+            _selectedItem = item;
             UpdatePreview(item);
+            await Task.CompletedTask;
         }
 
         void OnSearchTextChanged(object? sender, TextChangedEventArgs e)
         {
-            var query = e.NewTextValue?.Trim();
-            if (string.IsNullOrEmpty(query))
+            var query = e.NewTextValue?.Trim() ?? string.Empty;
+            Preferences.Set(LastSearchTextKey, query);
+            SaveSearchHistory(query);
+            ApplySearchFilter(query);
+        }
+        async void OnSearchBarFocused(object? sender, FocusEventArgs e)
+        {
+            // kept for compatibility but history is now shown via the history button
+            await Task.CompletedTask;
+        }
+
+        async void OnHistoryClicked(object? sender, EventArgs e)
+        {
+            try
+            {
+                var history = GetSearchHistory();
+                if (history.Count == 0)
+                    return;
+
+                var items = history.Take(MaxSearchHistoryItems).ToArray();
+                var picked = await DisplayActionSheet("Historique des recherches", "Annuler", null, items);
+                if (!string.IsNullOrWhiteSpace(picked) && picked != "Annuler")
+                    _searchBar.Text = picked;
+            }
+            catch { }
+        }
+
+        void ApplySearchFilter(string? query)
+        {
+            var normalized = query?.Trim();
+            if (string.IsNullOrEmpty(normalized))
             {
                 _fileList.ItemsSource = _allItems;
                 return;
             }
+
             _fileList.ItemsSource = _allItems
-                .Where(fi => fi.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Where(fi => fi.DisplayName.Contains(normalized, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+        }
+
+        void SaveSearchHistory(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return;
+
+            try
+            {
+                var history = GetSearchHistory();
+                history.RemoveAll(x => string.Equals(x, query, StringComparison.OrdinalIgnoreCase));
+                history.Insert(0, query);
+                if (history.Count > MaxSearchHistoryItems)
+                    history = history.Take(MaxSearchHistoryItems).ToList();
+                Preferences.Set(SearchHistoryKey, string.Join('|', history));
+            }
+            catch { }
+        }
+
+        List<string> GetSearchHistory()
+        {
+            try
+            {
+                var raw = Preferences.Get(SearchHistoryKey, string.Empty);
+                if (string.IsNullOrWhiteSpace(raw))
+                    return new List<string>();
+
+                return raw
+                    .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            catch
+            {
+                return new List<string>();
+            }
         }
 
         class FileItem
@@ -843,42 +784,14 @@ namespace test
                         canvas.FillCircle(p.X, p.Y, pr);
                         break;
                     case TagText t:
-                        try
-                        {
-                            canvas.SaveState();
-                            canvas.Translate(t.X, t.Y);
-                            canvas.Scale(1, -1);
-                            canvas.FontSize = t.Size;
-                            canvas.FontColor = Colors.Red;
-                            canvas.DrawString(t.Text ?? string.Empty, 0, 0, HorizontalAlignment.Left);
-                            canvas.RestoreState();
-                        }
-                        catch { }
+                        // Do not render text labels in thumbnails to avoid clutter (remove red texts)
                         break;
                 }
             }
 
             canvas.RestoreState();
 
-            // Draw small axes marker anchored top-right of the preview (screen coords)
-            try
-            {
-                float margin = Math.Min(12f, dirtyRect.Width * 0.06f);
-                float axisLen = Math.Max(10f, Math.Min(dirtyRect.Width, dirtyRect.Height) * 0.12f);
-                float ox = dirtyRect.Right - margin;
-                float oy = dirtyRect.Top + margin;
-
-                canvas.SaveState();
-                canvas.StrokeSize = 2f;
-                canvas.StrokeColor = Colors.Red;
-                canvas.DrawLine(ox, oy, ox - axisLen, oy);
-                canvas.StrokeColor = Colors.Green;
-                canvas.DrawLine(ox, oy, ox, oy + axisLen);
-                canvas.FillColor = Colors.Yellow;
-                canvas.FillCircle(ox, oy, Math.Max(3f, axisLen * 0.08f));
-                canvas.RestoreState();
-            }
-            catch { }
+            // Do not draw axes marker in thumbnails (remove red/green/yellow markers)
         }
     }
 }

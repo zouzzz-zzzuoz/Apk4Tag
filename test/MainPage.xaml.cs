@@ -53,6 +53,41 @@ namespace test
             ViewerImage.GestureRecognizers.Add(imageSingleTap);
         }
 
+        void OnCompanyLinkTapped(object sender, EventArgs e)
+        {
+            try
+            {
+                var uri = new Uri("https://www.steco-industries.fr");
+                Browser.OpenAsync(uri, BrowserLaunchMode.SystemPreferred);
+            }
+            catch { }
+        }
+
+        void HideKeyboard()
+        {
+            try
+            {
+#if ANDROID
+                var activity = Platform.CurrentActivity;
+                var imm = activity?.GetSystemService(Android.Content.Context.InputMethodService) as Android.Views.InputMethods.InputMethodManager;
+                var token = activity?.Window?.DecorView?.WindowToken;
+                if (imm != null && token != null)
+                    imm.HideSoftInputFromWindow(token, 0);
+#elif IOS || MACCATALYST
+                // iOS/MacCatalyst: unfocus any focused element
+                this.Dispatcher.Dispatch(() =>
+                {
+                    var current = this.FindByName<View>("_searchBar");
+                    current?.Unfocus();
+                });
+#else
+                // fallback: unfocus page
+                this.Dispatcher.Dispatch(() => this.Unfocus());
+#endif
+            }
+            catch { }
+        }
+
         // Activate manual reselection mode for the specified measure point
         public void OnCycleSnapPoint1Clicked(object sender, EventArgs e)
         {
@@ -743,63 +778,24 @@ namespace test
             {
                 string? filePath = null;
 
-                // On Android prefer the native system picker when the user presses "Ouvrir".
-                // This avoids requesting broad MANAGE_EXTERNAL_STORAGE permissions and the
-                // Samsung "Accès à tous les fichiers" settings screen.
-#if ANDROID
+                // Always try the custom FileBrowserPage first (request storage permissions on Android)
                 try
                 {
-                    var result = await FilePicker.Default.PickAsync(new PickOptions
+                    bool hasAccess = await RequestStoragePermissionAsync();
+                    if (hasAccess)
                     {
-                        PickerTitle = "Choisir un fichier (.tag, .jpg, .png, .bmp, .gif, .webp, .tif)"
-                    });
-
-                    if (result != null)
-                    {
-                        // Copy to cache because on Android the FileResult may be a content URI
-                        var dest = Path.Combine(FileSystem.CacheDirectory, result.FileName ?? Guid.NewGuid().ToString());
-                        using (var src = await result.OpenReadAsync())
-                        using (var dst = File.Create(dest))
-                        {
-                            await src.CopyToAsync(dst);
-                        }
-                        filePath = dest;
-                    }
-                    else
-                    {
-                        // user cancelled picker
-                        return;
+                        var tcs = new TaskCompletionSource<string?>();
+                        var browserPage = new FileBrowserPage(tcs);
+                        await Navigation.PushModalAsync(browserPage);
+                        filePath = await tcs.Task;
                     }
                 }
-                catch
-                {
-                    // If native picker fails for any reason, fall back to the in-app browser below
-                    filePath = null;
-                }
-#endif
+                catch { }
 
-                bool usedCustomBrowser = false;
-
-                // If no file selected yet, attempt the custom browser (and request permissions when needed)
+                // Fallback: system FilePicker if custom browser failed or returned null
                 if (string.IsNullOrEmpty(filePath))
                 {
                     try
-                    {
-                        // Request storage permissions on Android before showing our browser (used as fallback)
-                        bool hasAccess = await RequestStoragePermissionAsync();
-                        if (hasAccess)
-                        {
-                            var tcs = new TaskCompletionSource<string?>();
-                            var browserPage = new FileBrowserPage(tcs);
-                            await Navigation.PushModalAsync(browserPage);
-                            filePath = await tcs.Task;
-                            usedCustomBrowser = true;
-                        }
-                    }
-                    catch { }
-
-                    // Final fallback: system FilePicker on non-Android platforms or if browser not used
-                    if (!usedCustomBrowser && string.IsNullOrEmpty(filePath))
                     {
                         var result = await FilePicker.Default.PickAsync(new PickOptions
                         {
@@ -807,7 +803,6 @@ namespace test
                         });
                         if (result != null)
                         {
-                            // Try FullPath first; if null (content URI on Android) copy to cache
                             if (!string.IsNullOrEmpty(result.FullPath) && File.Exists(result.FullPath))
                                 filePath = result.FullPath;
                             else
@@ -822,10 +817,15 @@ namespace test
                             }
                         }
                     }
+                    catch { }
                 }
 
                 if (string.IsNullOrEmpty(filePath))
                     return;
+
+                // Hide the soft keyboard when a file was chosen so it does not remain visible
+                // on the main page (useful when returning from the in-app browser/search).
+                try { HideKeyboard(); } catch { }
 
                 var ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
                 var fileName = System.IO.Path.GetFileName(filePath);
@@ -972,6 +972,9 @@ namespace test
             try
             {
                 if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
+
+                // Ensure keyboard is hidden when opening a file programmatically
+                try { HideKeyboard(); } catch { }
                 var ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
                 var fileName = System.IO.Path.GetFileName(filePath);
 
@@ -1070,11 +1073,24 @@ namespace test
                 {
                     try
                     {
-                        var intent = new Android.Content.Intent(Android.Provider.Settings.ActionManageAllFilesAccessPermission);
+                        // Open the app-specific "Accès à tous les fichiers" settings page
+                        // so the user can grant the permission to this app.
+                        var pkg = Platform.CurrentActivity?.PackageName ?? string.Empty;
+                        var uri = Android.Net.Uri.Parse($"package:{pkg}");
+                        var intent = new Android.Content.Intent(Android.Provider.Settings.ActionManageAppAllFilesAccessPermission, uri);
+                        intent.AddFlags(Android.Content.ActivityFlags.NewTask);
                         Platform.CurrentActivity?.StartActivity(intent);
-                        // Wait briefly for the user to return from settings
-                        await Task.Delay(500);
-                        // Re-check after user returns (they may have toggled it)
+
+                        // Poll for the permission for a short period (user must toggle the setting).
+                        // There is no supported way to grant MANAGE_EXTERNAL_STORAGE silently.
+                        const int attempts = 40; // ~20s total (40 * 500ms)
+                        for (int i = 0; i < attempts; i++)
+                        {
+                            await Task.Delay(500);
+                            if (Android.OS.Environment.IsExternalStorageManager)
+                                return true;
+                        }
+
                         return Android.OS.Environment.IsExternalStorageManager;
                     }
                     catch

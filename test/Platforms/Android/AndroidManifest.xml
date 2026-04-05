@@ -13,6 +13,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Accès fichiers via le sélecteur (Android 11+) -->
+    <!-- Permission d'accès total au stockage (MANAGE_EXTERNAL_STORAGE) requise
+         si on veut demander à l'utilisateur l'accès "Accès à tous les fichiers".
+         Cette permission doit être utilisée avec précaution et n'est pas
+         nécessaire si vous utilisez le sélecteur natif ou les permissions
+         scoped (READ_MEDIA_*). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
