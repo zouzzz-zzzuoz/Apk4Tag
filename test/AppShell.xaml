@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Shell
+    x:Class="test.AppShell"
+    xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+    xmlns:local="clr-namespace:test"
+    Title="test">
+
+    <Shell.TitleView>
+        <VerticalStackLayout Padding="6" Spacing="2">
+            <Grid ColumnDefinitions="*,*,*,*,*,*" ColumnSpacing="4" HorizontalOptions="Fill">
+                <Button Grid.Column="0" Text="Ouvrir" Clicked="OnShellOpenClicked" FontSize="11" Padding="4,4" TextColor="White" />
+                <Button Grid.Column="1" x:Name="FitButton" Text="Ajuster" Clicked="OnShellFitClicked" FontSize="10" Padding="2,2" TextColor="White" IsEnabled="False" Opacity="0.5" />
+                <Button Grid.Column="2" x:Name="ZoomOutButton" Text="Dézoom" Clicked="OnShellZoomOutClicked" FontSize="10" Padding="2,2" TextColor="White" IsEnabled="False" Opacity="0.5" />
+                <Button Grid.Column="3" x:Name="MeasureDoubleButton" Text="📐Ortho" Clicked="OnShellMeasureDoubleClicked" FontSize="11" Padding="4,4" TextColor="White" IsEnabled="False" Opacity="0.5" />
+                <Button Grid.Column="4" x:Name="MeasureLinearButton" Text="📏Linéaire" Clicked="OnShellMeasureLinearClicked" FontSize="11" Padding="4,4" TextColor="White" IsEnabled="False" Opacity="0.5" />
+                <Button Grid.Column="5" x:Name="ToggleDimensionsButton" Text="⚡ H.Potter" Clicked="OnShellToggleDimensionsClicked" FontSize="11" Padding="4,4" TextColor="White" IsEnabled="False" Opacity="0.5" />
+            </Grid>
+
+            <!-- Recent files previews shown under the title buttons. Each preview is tappable to re-open the file. -->
+            <ScrollView Orientation="Horizontal" HeightRequest="96" HorizontalOptions="Fill" VerticalOptions="Start">
+                <HorizontalStackLayout x:Name="RecentPreviewsStack" Spacing="6" Padding="4" />
+            </ScrollView>
+        </VerticalStackLayout>
+    </Shell.TitleView>
+
+    <ShellContent
+        Title=""
+        ContentTemplate="{DataTemplate local:MainPage}"
+        Route="MainPage" />
+
+</Shell>

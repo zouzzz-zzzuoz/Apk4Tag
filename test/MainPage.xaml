@@ -1,0 +1,48 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="test.MainPage">
+
+    <Grid RowDefinitions="Auto,*" Padding="12">
+
+        <!-- Filename shown under the shell title bar -->
+        <Label Grid.Row="0" x:Name="FileNameLabel" Text="Aucun fichier chargé" FontSize="14" TextColor="Black" HorizontalOptions="Center" Margin="0,4,0,0" />
+
+        <!-- Main viewers fill remaining space -->
+        <Image Grid.Row="1" x:Name="ViewerImage" IsVisible="False" Aspect="AspectFit" />
+        <GraphicsView Grid.Row="1" x:Name="Viewer" Background="White" />
+
+        <!-- Overlays -->
+        <HorizontalStackLayout Grid.Row="1" HorizontalOptions="End" VerticalOptions="End" Margin="0,0,8,2" Spacing="4">
+            <Label Text="par Romu" FontSize="12" TextColor="Gray" VerticalOptions="Center" />
+            <Label x:Name="VersionLabel" Text="" FontSize="12" TextColor="Gray" VerticalOptions="Center" />
+        </HorizontalStackLayout>
+
+        <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="6" VerticalOptions="End" HorizontalOptions="Fill" Margin="0,0,0,16">
+            <Button Grid.Column="0"
+                    x:Name="CycleSnapPoint1Button"
+                    Text="Changer accroche P1"
+                    IsVisible="False"
+                    FontSize="11"
+                    Padding="6,3"
+                    HeightRequest="32"
+                    HorizontalOptions="Fill"
+                    BackgroundColor="Brown"
+                    TextColor="White"
+                    Clicked="OnCycleSnapPoint1Clicked" />
+            <Button Grid.Column="1"
+                    x:Name="CycleSnapPoint2Button"
+                    Text="Changer accroche P2"
+                    IsVisible="False"
+                    FontSize="11"
+                    Padding="6,3"
+                    HeightRequest="32"
+                    HorizontalOptions="Fill"
+                    BackgroundColor="Gray"
+                    TextColor="White"
+                    Clicked="OnCycleSnapPoint2Clicked" />
+        </Grid>
+
+    </Grid>
+
+        </ContentPage>

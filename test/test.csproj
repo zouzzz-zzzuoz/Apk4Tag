@@ -1,0 +1,136 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>21.0</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>APK4TAG</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <MauiXamlInflator>None</MauiXamlInflator>
+
+    <!-- Workaround: allow missing prune package data during SDK/preview transitions -->
+    <AllowMissingPrunePackageData>true</AllowMissingPrunePackageData>
+
+    <ApplicationTitle>test</ApplicationTitle>
+    <ApplicationId>com.companyname.test</ApplicationId>
+
+    <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+
+    <WindowsPackageType>None</WindowsPackageType>
+
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">15.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+    <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+
+  </PropertyGroup>
+
+  <!-- Fix for ARM64 native code generation error in .NET 10 -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release' and '$(TargetFramework)'=='net10.0-android'">
+    <AndroidSupportedAbis>arm64-v8a;armeabi-v7a</AndroidSupportedAbis>
+    <RunAOTCompilation>false</RunAOTCompilation>
+  </PropertyGroup>
+
+  <!-- Debug titles -->
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-android|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-ios|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-maccatalyst|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Debug|net10.0-windows10.0.19041.0|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <!-- Release titles -->
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-android|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-ios|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-maccatalyst|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net10.0-windows10.0.19041.0|AnyCPU'">
+    <ApplicationTitle>Apk4Tag</ApplicationTitle>
+    <ApplicationId>Apk4Tag</ApplicationId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <MauiIcon Include="Resources\AppIcon\icon_b.png" />
+    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
+    <MauiImage Include="Resources\Images\*" />
+    <MauiImage Update="Resources\Images\dotnet_bot.png" Resize="True" BaseSize="300,185" />
+    <MauiFont Include="Resources\Fonts\*" />
+    <MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AndroidResource Remove="Platforms\Android\Resources\anim\fade_out.xml" />
+    <AndroidResource Remove="Platforms\Android\Resources\anim\rotate_in.xml" />
+  </ItemGroup>
+
+  <UsingTask TaskName="UpdateBuildVersion" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <CounterFilePath ParameterType="System.String" Required="true" />
+      <GeneratedFilePath ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+if (File.Exists(GeneratedFilePath) && (DateTime.Now - File.GetLastWriteTime(GeneratedFilePath)).TotalSeconds < 30)
+  return true;
+
+var today = DateTime.Now.ToString("yyMMdd");
+int counter = 1;
+if (File.Exists(CounterFilePath))
+{
+  var parts = File.ReadAllText(CounterFilePath).Trim().Split('|');
+  if (parts.Length == 2 && parts[0] == today && int.TryParse(parts[1], out int prev))
+    counter = prev + 1;
+}
+File.WriteAllText(CounterFilePath, today + "|" + counter);
+var version = "v" + today + "-" + counter;
+var code = "namespace test { internal static class BuildInfo { internal const string Version = \"" + version + "\"; } }\n";
+File.WriteAllText(GeneratedFilePath, code);
+]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="GenerateBuildVersion" BeforeTargets="CoreCompile">
+    <UpdateBuildVersion CounterFilePath="$(MSBuildProjectDirectory)\build_counter.txt" GeneratedFilePath="$(MSBuildProjectDirectory)\BuildVersion.g.cs" />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="8.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>
