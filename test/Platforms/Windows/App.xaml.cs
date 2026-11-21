@@ -17,6 +17,19 @@ namespace test.WinUI
         public App()
         {
             this.InitializeComponent();
+            this.UnhandledException += OnUnhandledException;
+        }
+
+        private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            // Write the full exception to a crash log next to the exe
+            try
+            {
+                var logPath = System.IO.Path.Combine(AppContext.BaseDirectory, "crash.log");
+                var msg = $"[{System.DateTime.Now:O}] {e.Exception?.GetType().FullName}: {e.Message}\n{e.Exception}\n\n";
+                System.IO.File.AppendAllText(logPath, msg);
+            }
+            catch { }
         }
 
         protected override MauiApp CreateMauiApp() => MauiProgram.CreateMauiApp();

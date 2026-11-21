@@ -34,7 +34,7 @@ namespace test
                     {
                         View previewView;
                         var ext = System.IO.Path.GetExtension(p).ToLowerInvariant();
-                        if (ext == ".tag")
+                        if (ext == ".tag" || ext == ".dxf" || ext == ".dwg" || ext == ".pdf" || ext == ".xls" || ext == ".xlsx")
                         {
                             // show simple placeholder for tag files; tapping will re-open
                             previewView = new Frame

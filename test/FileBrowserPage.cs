@@ -39,7 +39,8 @@ namespace test
         // supported file extensions
         static readonly HashSet<string> _supportedExtensions = new(StringComparer.OrdinalIgnoreCase)
         {
-            ".tag", ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"
+            ".tag", ".dxf", ".pdf",
+            ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff"
         };
 
         class StorageRoot
@@ -169,7 +170,7 @@ namespace test
                             return;
                         }
 
-                        if (fi.IsTagFile)
+                        if (fi.IsTagFile || fi.IsDxfFile)
                         {
                             miniImage.Source = null;
                             miniImage.IsVisible = false;
@@ -193,6 +194,7 @@ namespace test
                             miniPreview.Drawable = null;
 
                             var filePath = fi.FullPath;
+                            bool isDxf = fi.IsDxfFile;
                             TagModel? model = null;
                             try
                             {
@@ -201,7 +203,7 @@ namespace test
                                     try
                                     {
                                         using var stream = File.OpenRead(filePath);
-                                        return TagParser.ParseLightweight(stream);
+                                        return isDxf ? DxfParser.Parse(stream) : TagParser.ParseLightweight(stream);
                                     }
                                     catch
                                     {
@@ -213,7 +215,7 @@ namespace test
 
                             fi.PreviewModel = model;
                             fi.PreviewLoading = false;
-                            if (cell.BindingContext == fi && model != null)
+                            if (cell.BindingContext == fi && model != null && model.Entities.Count > 0)
                             {
                                 miniPreview.Drawable = new TagPreviewDrawable { Model = model };
                                 miniPreview.IsVisible = true;
@@ -224,6 +226,52 @@ namespace test
                                 miniPreview.Drawable = null;
                                 miniPreview.IsVisible = false;
                             }
+                            return;
+                        }
+
+                        if (fi.IsPdfFile)
+                        {
+                            miniImage.Source = null;
+                            miniImage.IsVisible = false;
+                            miniPreview.Drawable = null;
+                            miniPreview.IsVisible = false;
+
+                            if (fi.PreviewImageBytes != null)
+                            {
+                                miniPreview.Drawable = new PdfPreviewDrawable { ImageBytes = fi.PreviewImageBytes };
+                                miniPreview.IsVisible = true;
+                                miniPreview.Invalidate();
+                                return;
+                            }
+
+                            // Afficher le placeholder PDF immédiatement (pendant le chargement ou après échec)
+                            miniPreview.Drawable = new PlaceholderDrawable { Label = "PDF", IconColor = Color.FromArgb("#E53935") };
+                            miniPreview.IsVisible = true;
+                            miniPreview.Invalidate();
+
+                            if (fi.PreviewFailed || fi.PreviewLoading)
+                                return;
+
+                            fi.PreviewLoading = true;
+                            var pdfPath = fi.FullPath;
+                            byte[]? pdfBytes = null;
+                            try
+                            {
+                                pdfBytes = await RenderPdfThumbnailAsync(pdfPath);
+                            }
+                            catch { pdfBytes = null; }
+
+                            fi.PreviewImageBytes = pdfBytes;
+                            fi.PreviewLoading = false;
+                            if (pdfBytes == null) fi.PreviewFailed = true;
+
+                            if (cell.BindingContext == fi && pdfBytes != null)
+                            {
+                                miniPreview.Drawable = new PdfPreviewDrawable { ImageBytes = pdfBytes };
+                                miniPreview.IsVisible = true;
+                                miniPreview.Invalidate();
+                            }
+                            // si pdfBytes == null, le placeholder est déjà affiché
                             return;
                         }
 
@@ -505,7 +553,12 @@ namespace test
             {
                 var parent = Directory.GetParent(_currentDir)?.FullName;
                 if (!string.IsNullOrEmpty(parent) && Directory.Exists(parent))
+                {
+                    // Clear search when navigating up
+                    try { _searchBar.Text = string.Empty; } catch { }
+                    ApplySearchFilter(string.Empty);
                     NavigateTo(parent);
+                }
             }
             catch { }
         }
@@ -557,14 +610,21 @@ namespace test
                     foreach (var f in files)
                     {
                         var ext = Path.GetExtension(f).ToLowerInvariant();
+                        var isTag = ext == ".tag";
+                        var isDxf = ext == ".dxf";
+                        var isPdf = ext == ".pdf";
+                        var isImage = !isTag && !isDxf && !isPdf;
+                        string icon = isTag || isDxf ? "📐" : isPdf ? "📄" : "🖼";
                         items.Add(new FileItem
                         {
                             FullPath = f,
                             DisplayName = Path.GetFileName(f),
                             IsDirectory = false,
-                            Icon = ext == ".tag" ? "📐" : "🖼",
-                            IsTagFile = ext == ".tag",
-                            IsImageFile = ext != ".tag"
+                            Icon = icon,
+                            IsTagFile = isTag,
+                            IsImageFile = isImage,
+                            IsDxfFile = isDxf,
+                            IsPdfFile = isPdf
                         });
                     }
                 }
@@ -695,9 +755,100 @@ namespace test
             public string Icon { get; set; } = "";
             public bool IsTagFile { get; set; }
             public bool IsImageFile { get; set; }
+            public bool IsDxfFile { get; set; }
+            public bool IsPdfFile { get; set; }
             public TagModel? PreviewModel { get; set; }
             public bool PreviewLoading { get; set; }
-            public bool HasPreview => IsTagFile || IsImageFile;
+            public bool PreviewFailed { get; set; }
+            public byte[]? PreviewImageBytes { get; set; }
+            public bool HasPreview => IsTagFile || IsImageFile || IsDxfFile || IsPdfFile;
+        }
+
+        static async Task<byte[]?> RenderPdfThumbnailAsync(string pdfPath)
+        {
+#if ANDROID
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    string? tmpPath = null;
+                    try
+                    {
+                        Android.OS.ParcelFileDescriptor? pfd = null;
+
+                        // Approach 1: open the original file directly via Java API.
+                        // With MANAGE_EXTERNAL_STORAGE this works on SD card without any copy.
+                        try
+                        {
+                            var jf = new Java.IO.File(pdfPath);
+                            if (jf.Exists() && jf.CanRead())
+                                pfd = Android.OS.ParcelFileDescriptor.Open(jf, Android.OS.ParcelFileMode.ReadOnly);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[PDF Thumb] Direct open failed: {ex.Message}");
+                            pfd = null;
+                        }
+
+                        // Approach 2: stream-copy to app cache, then open from cache.
+                        if (pfd == null)
+                        {
+                            var cacheDir = Android.App.Application.Context.CacheDir?.AbsolutePath
+                                           ?? System.IO.Path.GetTempPath();
+                            tmpPath = System.IO.Path.Combine(cacheDir, "pdf_" + Guid.NewGuid().ToString("N") + ".pdf");
+                            using (var src = System.IO.File.OpenRead(pdfPath))
+                            using (var dst = System.IO.File.Create(tmpPath))
+                                src.CopyTo(dst);
+                            pfd = Android.OS.ParcelFileDescriptor.Open(
+                                new Java.IO.File(tmpPath), Android.OS.ParcelFileMode.ReadOnly);
+                        }
+
+                        if (pfd == null) return null;
+
+                        try
+                        {
+                            using var renderer = new Android.Graphics.Pdf.PdfRenderer(pfd);
+                            if (renderer.PageCount == 0) return null;
+                            using var page = renderer.OpenPage(0);
+                            int pw = page.Width, ph = page.Height;
+                            if (pw <= 0 || ph <= 0) return null;
+                            float scale = Math.Min(280f / pw, 280f / ph);
+                            if (scale > 2f) scale = 2f;
+                            int w = Math.Max(1, (int)(pw * scale));
+                            int h = Math.Max(1, (int)(ph * scale));
+                            var bmp = Android.Graphics.Bitmap.CreateBitmap(w, h, Android.Graphics.Bitmap.Config.Argb8888!)
+                                      ?? throw new InvalidOperationException("CreateBitmap returned null");
+                            bmp.EraseColor(Android.Graphics.Color.White);
+                            page.Render(bmp, null, null, Android.Graphics.Pdf.PdfRenderMode.ForDisplay);
+                            using var ms = new MemoryStream();
+                            bmp.Compress(Android.Graphics.Bitmap.CompressFormat.Png!, 100, ms);
+                            bmp.Recycle();
+                            var result = ms.ToArray();
+                            return result.Length > 0 ? result : null;
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[PDF Thumb] Render: {ex.GetType().Name}: {ex.Message}");
+                            return null;
+                        }
+                        finally { try { pfd.Close(); } catch { } }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[PDF Thumb] ERROR: {ex.GetType().Name}: {ex.Message}");
+                        return null;
+                    }
+                    finally
+                    {
+                        if (tmpPath != null) try { System.IO.File.Delete(tmpPath); } catch { }
+                    }
+                });
+            }
+            catch { return null; }
+#else
+            await Task.CompletedTask;
+            return null;
+#endif
         }
     }
 
@@ -792,6 +943,57 @@ namespace test
             canvas.RestoreState();
 
             // Do not draw axes marker in thumbnails (remove red/green/yellow markers)
+        }
+    }
+
+    class PdfPreviewDrawable : IDrawable
+    {
+        public byte[]? ImageBytes { get; set; }
+#if ANDROID
+        Microsoft.Maui.Graphics.IImage? _image;
+#endif
+
+        public void Draw(ICanvas canvas, RectF dirtyRect)
+        {
+            canvas.FillColor = Color.FromArgb("#F5F5F5");
+            canvas.FillRectangle(dirtyRect);
+            if (ImageBytes == null || ImageBytes.Length == 0) return;
+#if ANDROID
+            try
+            {
+                if (_image == null)
+                    _image = Microsoft.Maui.Graphics.Platform.PlatformImage.FromStream(new MemoryStream(ImageBytes));
+                if (_image is Microsoft.Maui.Graphics.IImage img)
+                    canvas.DrawImage(img, dirtyRect.X, dirtyRect.Y, dirtyRect.Width, dirtyRect.Height);
+            }
+            catch { }
+#endif
+        }
+    }
+
+    class PlaceholderDrawable : IDrawable
+    {
+        public string Label { get; set; } = "";
+        public Color IconColor { get; set; } = Colors.Gray;
+
+        public void Draw(ICanvas canvas, RectF dirtyRect)
+        {
+            canvas.FillColor = Color.FromArgb("#F0F0F0");
+            canvas.FillRectangle(dirtyRect);
+
+            canvas.FillColor = IconColor;
+            float iconSize = Math.Min(dirtyRect.Width, dirtyRect.Height) * 0.35f;
+            float cx = dirtyRect.Center.X;
+            float cy = dirtyRect.Center.Y - 8;
+            canvas.FillRoundedRectangle(cx - iconSize / 2, cy - iconSize / 2, iconSize, iconSize, 6);
+
+            canvas.FontColor = Colors.White;
+            canvas.FontSize = iconSize * 0.35f;
+            canvas.DrawString(Label, cx - iconSize / 2, cy - iconSize / 2, iconSize, iconSize, HorizontalAlignment.Center, VerticalAlignment.Center);
+
+            canvas.FontColor = Colors.DarkGray;
+            canvas.FontSize = 10;
+            canvas.DrawString(Label, dirtyRect.X, dirtyRect.Bottom - 18, dirtyRect.Width, 18, HorizontalAlignment.Center, VerticalAlignment.Center);
         }
     }
 }

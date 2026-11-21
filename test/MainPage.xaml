@@ -9,8 +9,9 @@
         <Label Grid.Row="0" x:Name="FileNameLabel" Text="Aucun fichier chargé" FontSize="14" TextColor="Black" HorizontalOptions="Center" Margin="0,4,0,0" />
 
         <!-- Main viewers fill remaining space -->
-        <Image Grid.Row="1" x:Name="ViewerImage" IsVisible="False" Aspect="AspectFit" />
         <GraphicsView Grid.Row="1" x:Name="Viewer" Background="White" />
+        <Image Grid.Row="1" x:Name="ViewerImage" IsVisible="False" Aspect="AspectFit" />
+        <WebView Grid.Row="1" x:Name="ViewerWebView" IsVisible="False" />
 
         <!-- Overlays -->
         <Grid Grid.Row="1" VerticalOptions="End" Margin="0,0,8,2">
@@ -20,7 +21,7 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <Label Grid.Column="0" Text="STECO Ind." FontSize="12" TextColor="Blue" VerticalOptions="Center" TextDecorations="Underline">
+            <Label Grid.Column="0" Text="STECO Ind. Odoo" FontSize="12" TextColor="Blue" VerticalOptions="Center" TextDecorations="Underline">
                 <Label.GestureRecognizers>
                     <TapGestureRecognizer Tapped="OnCompanyLinkTapped" NumberOfTapsRequired="1" />
                 </Label.GestureRecognizers>

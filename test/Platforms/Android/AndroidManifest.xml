@@ -6,6 +6,17 @@
         android:icon="@mipmap/icon_b"
         android:roundIcon="@mipmap/icon_b"
         android:supportsRtl="true">
+        <!-- Intent filters are declared via [IntentFilter] C# attributes on MainActivity.cs
+             so they are applied to the correct generated Java class name. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
     <!-- Permissions réseau -->

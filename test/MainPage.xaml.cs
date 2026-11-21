@@ -51,13 +51,16 @@ namespace test
             var imageSingleTap = new TapGestureRecognizer { NumberOfTapsRequired = 1 };
             imageSingleTap.Tapped += OnSingleTapped;
             ViewerImage.GestureRecognizers.Add(imageSingleTap);
+            // Pinch-to-zoom is handled natively on Android via MainActivity.ScaleGestureDetector
+            // Default shell buttons: no file opened -> only Open active
+            SetShellButtonsMode(ShellButtonsMode.None);
         }
 
         void OnCompanyLinkTapped(object sender, EventArgs e)
         {
             try
             {
-                var uri = new Uri("https://www.steco-industries.fr");
+                var uri = new Uri("https://www.steco-industries.fr/odoo");
                 Browser.OpenAsync(uri, BrowserLaunchMode.SystemPreferred);
             }
             catch { }
@@ -228,6 +231,8 @@ namespace test
         float _imgScale = 1f;
         float _imgPanX = 0f;
         float _imgPanY = 0f;
+        // flag to block pan gesture during pinch
+        bool _isPinching = false;
         float _panStartPanX = 0f;
         float _panStartPanY = 0f;
         // sensitivity for finger pan (0..1). Lower = slower movement.
@@ -240,9 +245,12 @@ namespace test
         // pinch sensitivity exponent default (used for double-tap zoom)
         double PinchPower = 20.0;
 
-        protected override void OnAppearing()
+        protected override async void OnAppearing()
         {
             base.OnAppearing();
+#if ANDROID
+            MainActivity.PinchEvent += OnNativePinch;
+#endif
             UpdateMeasurementUI();
             bool show = _drawable.MeasurementMode != MeasurementType.None && _model != null;
             CycleSnapPoint1Button.IsVisible = show;
@@ -251,6 +259,150 @@ namespace test
             CycleSnapPoint2Button.IsVisible = show;
             CycleSnapPoint2Button.IsEnabled = show && _drawable.MeasurePoint2.HasValue;
             CycleSnapPoint2Button.Opacity = CycleSnapPoint2Button.IsEnabled ? 1.0 : 0.5;
+
+            // Check for pending file from an external intent (cold start scenario)
+            await TryOpenPendingFileAsync();
+
+            // Safety net: if HandleViewIntent runs AFTER OnAppearing (race condition),
+            // re-check after a short delay.
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(800);
+                Dispatcher.Dispatch(async () =>
+                {
+                    try { await TryOpenPendingFileAsync(); } catch { }
+                });
+            });
+        }
+
+        protected override void OnDisappearing()
+        {
+            base.OnDisappearing();
+#if ANDROID
+            MainActivity.PinchEvent -= OnNativePinch;
+#endif
+        }
+
+        #if ANDROID
+        // Native Android pinch handler — called from MainActivity.ScaleGestureDetector
+        void OnNativePinch(float scaleFactor, float screenFocalX, float screenFocalY, int status)
+        {
+            try
+            {
+                // status: 0 = begin, 1 = scale, 2 = end
+                if (status == 0)
+                {
+                    _isPinching = true;
+                    return;
+                }
+                if (status == 2)
+                {
+                    _isPinching = false;
+                    return;
+                }
+
+                // status == 1: apply incremental scale
+                float density = (float)DeviceDisplay.MainDisplayInfo.Density;
+
+                if (_model != null && Viewer.IsVisible)
+                {
+                    ApplyViewerPinch(scaleFactor, screenFocalX, screenFocalY, density);
+                }
+                else if (ViewerImage.IsVisible)
+                {
+                    ApplyImagePinch(scaleFactor, screenFocalX, screenFocalY, density);
+                }
+            }
+            catch { }
+        }
+
+        void ApplyViewerPinch(float scaleFactor, float screenFocalX, float screenFocalY, float density)
+        {
+            var nv = Viewer.Handler?.PlatformView as Android.Views.View;
+            if (nv == null) return;
+
+            int[] loc = new int[2];
+            nv.GetLocationOnScreen(loc);
+
+            // Convert screen px → view-local dips
+            float localX = (screenFocalX - loc[0]) / density;
+            float localY = (screenFocalY - loc[1]) / density;
+
+            float vw = (float)Viewer.Width;
+            float vh = (float)Viewer.Height;
+            if (vw <= 0 || vh <= 0) return;
+
+            float centerX = vw / 2f;
+            float centerY = vh / 2f;
+
+            float oldScale = _drawable.Scale;
+            float newScale = Math.Clamp(oldScale * scaleFactor, 0.05f, 200f);
+            float ratio = newScale / oldScale;
+
+            // Keep the focal point stationary
+            float dx = localX - centerX - _drawable.PanX;
+            float dy = localY - centerY - _drawable.PanY;
+            _drawable.PanX += dx * (1f - ratio);
+            _drawable.PanY += dy * (1f - ratio);
+            _drawable.Scale = newScale;
+            Viewer.Invalidate();
+        }
+
+        void ApplyImagePinch(float scaleFactor, float screenFocalX, float screenFocalY, float density)
+        {
+            // Use the Viewer (GraphicsView) as a stable reference — it occupies
+            // the exact same Grid cell as ViewerImage but has no Scale/Translation
+            // transforms, so GetLocationOnScreen returns a rock-solid position.
+            var refView = Viewer.Handler?.PlatformView as Android.Views.View;
+            if (refView == null) return;
+
+            float vw = (float)ViewerImage.Width;
+            float vh = (float)ViewerImage.Height;
+            if (vw <= 0 || vh <= 0) return;
+
+            int[] loc = new int[2];
+            refView.GetLocationOnScreen(loc);
+
+            // Focal point in view-local dips (relative to top-left of the cell)
+            float localX = (screenFocalX - loc[0]) / density;
+            float localY = (screenFocalY - loc[1]) / density;
+
+            // Center of the image view in local dips
+            float centerX = vw / 2f;
+            float centerY = vh / 2f;
+
+            // Distance from the view center to the focal point, accounting for current pan
+            float dx = localX - centerX - _imgPanX;
+            float dy = localY - centerY - _imgPanY;
+
+            float oldScale = _imgScale;
+            float newScale = Math.Clamp(oldScale * scaleFactor, 0.15f, 10f);
+            float ratio = newScale / oldScale;
+
+            // Adjust translation to keep the focal point stationary
+            _imgPanX += dx * (1f - ratio);
+            _imgPanY += dy * (1f - ratio);
+            _imgScale = newScale;
+
+            ViewerImage.Scale = _imgScale;
+            ViewerImage.TranslationX = _imgPanX;
+            ViewerImage.TranslationY = _imgPanY;
+        }
+#endif
+
+        async Task TryOpenPendingFileAsync()
+        {
+            try
+            {
+                var pending = App.PendingOpenFilePath;
+                if (!string.IsNullOrEmpty(pending))
+                {
+                    App.PendingOpenFilePath = null;
+                    if (File.Exists(pending))
+                        await OpenFileAsync(pending);
+                }
+            }
+            catch { }
         }
 
         // Pinch power slider removed from UI; keep `PinchPower` field for zoom behavior.
@@ -258,6 +410,7 @@ namespace test
         private void OnPanUpdated(object sender, PanUpdatedEventArgs e)
         {
             if (_drawable == null) return;
+            if (_isPinching) return;
             if (e.StatusType == GestureStatus.Started)
             {
                 // remember starting pan
@@ -281,6 +434,7 @@ namespace test
         {
             // Allow panning the image when in image mode
             if (ViewerImage == null || ViewerImage.IsVisible == false) return;
+            if (_isPinching) return;
             if (e.StatusType == GestureStatus.Started)
             {
                 _imgStartTransX = (float)ViewerImage.TranslationX;
@@ -799,7 +953,7 @@ namespace test
                     {
                         var result = await FilePicker.Default.PickAsync(new PickOptions
                         {
-                            PickerTitle = "Choisir un fichier (.tag, .jpg, .png, .bmp, .gif, .webp, .tif)"
+                            PickerTitle = "Choisir un fichier (.tag, .dxf, .dwg, .pdf, .xls, .xlsx, .jpg, .png, .bmp, .gif, .webp, .tif)"
                         });
                         if (result != null)
                         {
@@ -848,13 +1002,14 @@ namespace test
                     _drawable.MeasurePoint2 = null;
                     // show axes marker when a .tag is opened
                     _drawable.ShowAxes = true;
-                    // enable measurement buttons when a .tag is opened
-                    SetMeasurementButtonsEnabled(true);
+                    // enable full measurement buttons when a .tag is opened
+                    SetShellButtonsMode(ShellButtonsMode.Full);
                     // ensure measurement UI (including cycle button) reflects new model state
                     UpdateMeasurementUI();
                     // ensure GraphicsView visible
                     Viewer.IsVisible = true;
                     ViewerImage.IsVisible = false;
+                    ViewerWebView.IsVisible = false;
                 }
                 else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".gif" || ext == ".webp" || ext == ".tif" || ext == ".tiff")
                 {
@@ -863,6 +1018,7 @@ namespace test
                     {
                         Viewer.IsVisible = false;
                         ViewerImage.IsVisible = true;
+                        ViewerWebView.IsVisible = false;
                         // reset model
                         _model = null;
                         _drawable.Model = null;
@@ -870,7 +1026,7 @@ namespace test
                         _drawable.MeasurementMode = MeasurementType.None;
                         _drawable.MeasurePoint1 = null;
                         _drawable.MeasurePoint2 = null;
-                        SetMeasurementButtonsEnabled(false);
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
 
                         // Keep ZoomOut and Fit enabled for images
                         if (Application.Current?.MainPage is AppShell shellImg)
@@ -902,6 +1058,66 @@ namespace test
                     }
                     catch { }
                 }
+                else if (ext == ".dxf")
+                {
+                    TagModel parsedModel;
+                    using (var stream = File.OpenRead(filePath))
+                    {
+                        parsedModel = await Task.Run(() => DxfParser.Parse(stream));
+                    }
+                    _model = parsedModel;
+                    _drawable.Model = _model;
+                    _drawable.ResetTransform();
+                    _drawable.MeasurementMode = MeasurementType.None;
+                    _drawable.MeasurePoint1 = null;
+                    _drawable.MeasurePoint2 = null;
+                    _drawable.ShowAxes = true;
+                    // enable full measurement buttons for DXF
+                    SetShellButtonsMode(ShellButtonsMode.Full);
+                    UpdateMeasurementUI();
+                    Viewer.IsVisible = true;
+                    ViewerImage.IsVisible = false;
+                    ViewerWebView.IsVisible = false;
+                }
+                else if (ext == ".pdf")
+                {
+                    _model = null;
+                    _drawable.Model = null;
+                    _drawable.ShowAxes = false;
+                    _drawable.MeasurementMode = MeasurementType.None;
+                    _drawable.MeasurePoint1 = null;
+                    _drawable.MeasurePoint2 = null;
+                    SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
+                    UpdateMeasurementUI();
+                    byte[]? pdfBytes = await RenderPdfFirstPageAsync(filePath);
+                    if (pdfBytes != null)
+                    {
+                        Viewer.IsVisible = false;
+                        ViewerImage.IsVisible = true;
+                        ViewerWebView.IsVisible = false;
+                        _imgScale = 1f;
+                        _imgPanX = 0f;
+                        _imgPanY = 0f;
+                        ViewerImage.Scale = 1f;
+                        ViewerImage.TranslationX = 0;
+                        ViewerImage.TranslationY = 0;
+                        ViewerImage.Source = ImageSource.FromStream(() => new MemoryStream(pdfBytes));
+                        if (Application.Current?.MainPage is AppShell shellPdf)
+                        {
+                            var btnZoomOut = shellPdf.FindByName<Button>("ZoomOutButton");
+                            if (btnZoomOut != null) { btnZoomOut.IsEnabled = true; btnZoomOut.Opacity = 1.0; }
+                            var btnFit = shellPdf.FindByName<Button>("FitButton");
+                            if (btnFit != null) { btnFit.IsEnabled = true; btnFit.Opacity = 1.0; }
+                        }
+                    }
+                    else
+                    {
+                        Viewer.IsVisible = true;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = false;
+                        await DisplayAlert("PDF", "Impossible de rendre ce fichier PDF.", "OK");
+                    }
+                }
                 else
                 {
                     // unknown extension - notify the user
@@ -910,11 +1126,12 @@ namespace test
                     _drawable.MeasurementMode = MeasurementType.None;
                     _drawable.MeasurePoint1 = null;
                     _drawable.MeasurePoint2 = null;
-                    SetMeasurementButtonsEnabled(false);
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
                     UpdateMeasurementUI();
                     Viewer.IsVisible = true;
                     ViewerImage.IsVisible = false;
-                    await DisplayAlert("Format non supporté", $"Le format '{ext}' n'est pas pris en charge. Formats supportés : .tag, .png, .jpg, .bmp, .gif, .webp, .tif", "OK");
+                    ViewerWebView.IsVisible = false;
+                    await DisplayAlert("Format non supporté", $"Le format '{ext}' n'est pas pris en charge. Formats supportés : .tag, .dxf, .dwg, .pdf, .xls, .xlsx, .png, .jpg, .bmp, .gif, .webp, .tif", "OK");
                 }
 
                 // Set PinchPower to 20 when opening a file
@@ -992,10 +1209,12 @@ namespace test
                     _drawable.MeasurePoint1 = null;
                     _drawable.MeasurePoint2 = null;
                     _drawable.ShowAxes = true;
-                    SetMeasurementButtonsEnabled(true);
+                    // enable full measurement buttons for DXF
+                    SetShellButtonsMode(ShellButtonsMode.Full);
                     UpdateMeasurementUI();
                     Viewer.IsVisible = true;
                     ViewerImage.IsVisible = false;
+                    ViewerWebView.IsVisible = false;
                 }
                 else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".gif" || ext == ".webp" || ext == ".tif" || ext == ".tiff")
                 {
@@ -1003,13 +1222,14 @@ namespace test
                     {
                         Viewer.IsVisible = false;
                         ViewerImage.IsVisible = true;
+                        ViewerWebView.IsVisible = false;
                         _model = null;
                         _drawable.Model = null;
                         _drawable.ShowAxes = false;
                         _drawable.MeasurementMode = MeasurementType.None;
                         _drawable.MeasurePoint1 = null;
                         _drawable.MeasurePoint2 = null;
-                        SetMeasurementButtonsEnabled(false);
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
 
                         _imgScale = 1f;
                         _imgPanX = 0f;
@@ -1023,6 +1243,146 @@ namespace test
                     }
                     catch { }
                 }
+                else if (ext == ".dxf")
+                {
+                    TagModel parsedModel;
+                    using (var stream = File.OpenRead(filePath))
+                    {
+                        parsedModel = await Task.Run(() => DxfParser.Parse(stream));
+                    }
+                    _model = parsedModel;
+                    _drawable.Model = _model;
+                    _drawable.ResetTransform();
+                    _drawable.MeasurementMode = MeasurementType.None;
+                    _drawable.MeasurePoint1 = null;
+                    _drawable.MeasurePoint2 = null;
+                    _drawable.ShowAxes = true;
+                    SetShellButtonsMode(ShellButtonsMode.Full);
+                    UpdateMeasurementUI();
+                    Viewer.IsVisible = true;
+                    ViewerImage.IsVisible = false;
+                    ViewerWebView.IsVisible = false;
+                }
+                else if (ext == ".dwg")
+                {
+                    TagModel? parsedDwg = null;
+                    try
+                    {
+                        using var stream = File.OpenRead(filePath);
+                        parsedDwg = await Task.Run(() => DwgParser.Parse(stream));
+                    }
+                    catch { }
+
+                    if (parsedDwg != null && parsedDwg.Entities.Count > 0)
+                    {
+                        _model = parsedDwg;
+                        _drawable.Model = _model;
+                        _drawable.ResetTransform();
+                        _drawable.MeasurementMode = MeasurementType.None;
+                        _drawable.MeasurePoint1 = null;
+                        _drawable.MeasurePoint2 = null;
+                        _drawable.ShowAxes = true;
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
+                        UpdateMeasurementUI();
+                        Viewer.IsVisible = true;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = false;
+                    }
+                    else
+                    {
+                        _model = null;
+                        _drawable.Model = null;
+                        _drawable.ShowAxes = false;
+                        _drawable.MeasurementMode = MeasurementType.None;
+                        _drawable.MeasurePoint1 = null;
+                        _drawable.MeasurePoint2 = null;
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
+                        UpdateMeasurementUI();
+                        Viewer.IsVisible = true;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = false;
+                        string dwgError = DwgParser.LastError
+                            ?? (parsedDwg != null && parsedDwg.Entities.Count == 0
+                                ? "Aucune entité lisible trouvée dans ce fichier DWG."
+                                : "Aucune entité trouvée.");
+                        bool openDwg = await DisplayAlert("Format DWG",
+                            $"Impossible de lire ce fichier DWG.\n{dwgError}\nOuvrir avec une autre application ?",
+                            "Ouvrir", "Annuler");
+                        if (openDwg)
+                            await OpenWithExternalAppAsync(filePath, "application/octet-stream");
+                        return;
+                    }
+                }
+                else if (ext == ".pdf")
+                {
+                    _model = null;
+                    _drawable.Model = null;
+                    _drawable.ShowAxes = false;
+                    _drawable.MeasurementMode = MeasurementType.None;
+                    _drawable.MeasurePoint1 = null;
+                    _drawable.MeasurePoint2 = null;
+                        SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
+                    UpdateMeasurementUI();
+                    byte[]? pdfBytes = await RenderPdfFirstPageAsync(filePath);
+                    if (pdfBytes != null)
+                    {
+                        Viewer.IsVisible = false;
+                        ViewerImage.IsVisible = true;
+                        ViewerWebView.IsVisible = false;
+                        _imgScale = 1f;
+                        _imgPanX = 0f;
+                        _imgPanY = 0f;
+                        ViewerImage.Scale = 1f;
+                        ViewerImage.TranslationX = 0;
+                        ViewerImage.TranslationY = 0;
+                        ViewerImage.Source = ImageSource.FromStream(() => new MemoryStream(pdfBytes));
+                        if (Application.Current?.MainPage is AppShell shellPdf)
+                        {
+                            var btnZoomOut = shellPdf.FindByName<Button>("ZoomOutButton");
+                            if (btnZoomOut != null) { btnZoomOut.IsEnabled = true; btnZoomOut.Opacity = 1.0; }
+                            var btnFit = shellPdf.FindByName<Button>("FitButton");
+                            if (btnFit != null) { btnFit.IsEnabled = true; btnFit.Opacity = 1.0; }
+                        }
+                    }
+                    else
+                    {
+                        Viewer.IsVisible = true;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = false;
+                    }
+                }
+                else if (ext == ".xls" || ext == ".xlsx")
+                {
+                    _model = null;
+                    _drawable.Model = null;
+                    _drawable.ShowAxes = false;
+                    _drawable.MeasurementMode = MeasurementType.None;
+                    _drawable.MeasurePoint1 = null;
+                    _drawable.MeasurePoint2 = null;
+                    SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
+                    UpdateMeasurementUI();
+
+                    try
+                    {
+                        string html = await Task.Run(() => ExcelParser.ToHtml(filePath));
+                        Viewer.IsVisible = false;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = true;
+                        ViewerWebView.Source = new HtmlWebViewSource { Html = html };
+                    }
+                    catch
+                    {
+                        Viewer.IsVisible = true;
+                        ViewerImage.IsVisible = false;
+                        ViewerWebView.IsVisible = false;
+                        string mimeType = ext == ".xlsx" ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "application/vnd.ms-excel";
+                        bool openExt = await DisplayAlert("Excel",
+                            "Impossible de lire ce fichier Excel.\nOuvrir avec une autre application ?",
+                            "Ouvrir", "Annuler");
+                        if (openExt)
+                            await OpenWithExternalAppAsync(filePath, mimeType);
+                    }
+                }
                 else
                 {
                     _model = null;
@@ -1030,10 +1390,11 @@ namespace test
                     _drawable.MeasurementMode = MeasurementType.None;
                     _drawable.MeasurePoint1 = null;
                     _drawable.MeasurePoint2 = null;
-                    SetMeasurementButtonsEnabled(false);
+                    SetShellButtonsMode(ShellButtonsMode.FitZoomOnly);
                     UpdateMeasurementUI();
                     Viewer.IsVisible = true;
                     ViewerImage.IsVisible = false;
+                    ViewerWebView.IsVisible = false;
                     await DisplayAlert("Format non supporté", $"Le format '{ext}' n'est pas pris en charge.", "OK");
                     return;
                 }
@@ -1120,6 +1481,8 @@ namespace test
             _drawable.Model = null;
             _drawable.ShowAxes = false;
             Viewer.Invalidate();
+            // No file opened => only Open button active
+            SetShellButtonsMode(ShellButtonsMode.None);
             // update shell title status
             try
             {
@@ -1318,8 +1681,11 @@ namespace test
             catch { }
         }
 
-        // Enable or disable measurement buttons from code (used when opening non-.tag files)
-        private void SetMeasurementButtonsEnabled(bool enabled)
+        // Shell button modes: None = only Open active; FitZoomOnly = Ajuster+Dézoom active; Full = all measurement buttons active
+        enum ShellButtonsMode { None, FitZoomOnly, Full }
+
+        // Set shell buttons state depending on opened file type
+        private void SetShellButtonsMode(ShellButtonsMode mode)
         {
             try
             {
@@ -1328,43 +1694,47 @@ namespace test
                     var btnFit = shell.FindByName<Button>("FitButton");
                     if (btnFit != null)
                     {
-                        btnFit.IsEnabled = enabled;
-                        btnFit.Opacity = enabled ? 1.0 : 0.5;
+                        bool fitEnabled = mode != ShellButtonsMode.None;
+                        btnFit.IsEnabled = fitEnabled;
+                        btnFit.Opacity = fitEnabled ? 1.0 : 0.5;
                     }
 
                     var btnDouble = shell.FindByName<Button>("MeasureDoubleButton");
                     if (btnDouble != null)
                     {
-                        btnDouble.IsEnabled = enabled;
-                        btnDouble.Opacity = enabled ? 1.0 : 0.5;
+                        bool dblEnabled = mode == ShellButtonsMode.Full;
+                        btnDouble.IsEnabled = dblEnabled;
+                        btnDouble.Opacity = dblEnabled ? 1.0 : 0.5;
                     }
 
                     var btnLinear = shell.FindByName<Button>("MeasureLinearButton");
                     if (btnLinear != null)
                     {
-                        btnLinear.IsEnabled = enabled;
-                        btnLinear.Opacity = enabled ? 1.0 : 0.5;
+                        bool linEnabled = mode == ShellButtonsMode.Full;
+                        btnLinear.IsEnabled = linEnabled;
+                        btnLinear.Opacity = linEnabled ? 1.0 : 0.5;
                     }
 
-                    // Disable ZoomOut and ToggleDimensions buttons when no .tag model is loaded
                     var btnZoomOut = shell.FindByName<Button>("ZoomOutButton");
                     if (btnZoomOut != null)
                     {
-                        btnZoomOut.IsEnabled = enabled;
-                        btnZoomOut.Opacity = enabled ? 1.0 : 0.5;
+                        bool zoomEnabled = mode != ShellButtonsMode.None;
+                        btnZoomOut.IsEnabled = zoomEnabled;
+                        btnZoomOut.Opacity = zoomEnabled ? 1.0 : 0.5;
                     }
 
                     var btnToggleDim = shell.FindByName<Button>("ToggleDimensionsButton");
                     if (btnToggleDim != null)
                     {
-                        btnToggleDim.IsEnabled = enabled;
-                        btnToggleDim.Opacity = enabled ? 1.0 : 0.5;
+                        bool togEnabled = mode == ShellButtonsMode.Full;
+                        btnToggleDim.IsEnabled = togEnabled;
+                        btnToggleDim.Opacity = togEnabled ? 1.0 : 0.5;
                     }
 
-                    // Also hide/disable cycle snap buttons when measurement is not enabled
+                    // Also hide/disable cycle snap buttons when measurement is not fully enabled
                     var cycleP1 = shell.FindByName<Button>("CycleSnapPoint1Button");
                     var cycleP2 = shell.FindByName<Button>("CycleSnapPoint2Button");
-                    bool showSnap = enabled && _drawable.MeasurementMode != MeasurementType.None && _model != null;
+                    bool showSnap = mode == ShellButtonsMode.Full && _drawable.MeasurementMode != MeasurementType.None && _model != null;
                     if (cycleP1 != null)
                     {
                         cycleP1.IsVisible = showSnap;
@@ -1382,13 +1752,161 @@ namespace test
             catch { }
 
             // Update page-local buttons
-            bool showSnapLocal = enabled && _drawable.MeasurementMode != MeasurementType.None && _model != null;
+            bool showSnapLocal = mode == ShellButtonsMode.Full && _drawable.MeasurementMode != MeasurementType.None && _model != null;
             CycleSnapPoint1Button.IsVisible = showSnapLocal;
             CycleSnapPoint1Button.IsEnabled = showSnapLocal && _drawable.MeasurePoint1.HasValue;
             CycleSnapPoint1Button.Opacity = CycleSnapPoint1Button.IsEnabled ? 1.0 : 0.5;
             CycleSnapPoint2Button.IsVisible = showSnapLocal;
             CycleSnapPoint2Button.IsEnabled = showSnapLocal && _drawable.MeasurePoint2.HasValue;
             CycleSnapPoint2Button.Opacity = CycleSnapPoint2Button.IsEnabled ? 1.0 : 0.5;
+        }
+
+        static async Task<byte[]?> RenderPdfFirstPageAsync(string pdfPath, int scaleFactor = 2)
+        {
+#if ANDROID
+            try
+            {
+                return await Task.Run(() =>
+                {
+                    string? tmpPath = null;
+                    try
+                    {
+                        Android.OS.ParcelFileDescriptor? pfd = null;
+
+                        // Approach 1: open the original file directly via Java API.
+                        // With MANAGE_EXTERNAL_STORAGE this works on SD card without any copy.
+                        try
+                        {
+                            var jf = new Java.IO.File(pdfPath);
+                            if (jf.Exists() && jf.CanRead())
+                                pfd = Android.OS.ParcelFileDescriptor.Open(jf, Android.OS.ParcelFileMode.ReadOnly);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[PDF View] Direct open failed: {ex.Message}");
+                            pfd = null;
+                        }
+
+                        // Approach 2: stream-copy to app cache, then open from cache.
+                        if (pfd == null)
+                        {
+                            var cacheDir = Android.App.Application.Context.CacheDir?.AbsolutePath
+                                           ?? System.IO.Path.GetTempPath();
+                            tmpPath = System.IO.Path.Combine(cacheDir, "pdf_view_" + Guid.NewGuid().ToString("N") + ".pdf");
+                            using (var src = System.IO.File.OpenRead(pdfPath))
+                            using (var dst = System.IO.File.Create(tmpPath))
+                                src.CopyTo(dst);
+                            pfd = Android.OS.ParcelFileDescriptor.Open(
+                                new Java.IO.File(tmpPath), Android.OS.ParcelFileMode.ReadOnly);
+                        }
+
+                        if (pfd == null) return null;
+
+                        try
+                        {
+                            using var renderer = new Android.Graphics.Pdf.PdfRenderer(pfd);
+                            if (renderer.PageCount == 0) return null;
+                            using var page = renderer.OpenPage(0);
+                            int w = page.Width * scaleFactor;
+                            int h = page.Height * scaleFactor;
+                            if (w <= 0 || h <= 0) return null;
+                            var bmp = Android.Graphics.Bitmap.CreateBitmap(w, h, Android.Graphics.Bitmap.Config.Argb8888!)
+                                      ?? throw new InvalidOperationException("CreateBitmap returned null");
+                            bmp.EraseColor(Android.Graphics.Color.White);
+                            page.Render(bmp, null, null, Android.Graphics.Pdf.PdfRenderMode.ForDisplay);
+                            using var ms = new MemoryStream();
+                            bmp.Compress(Android.Graphics.Bitmap.CompressFormat.Png!, 100, ms);
+                            bmp.Recycle();
+                            var result = ms.ToArray();
+                            return result.Length > 0 ? result : null;
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"[PDF View] Render: {ex.GetType().Name}: {ex.Message}");
+                            return null;
+                        }
+                        finally { try { pfd.Close(); } catch { } }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[PDF View] ERROR: {ex.GetType().Name}: {ex.Message}");
+                        return null;
+                    }
+                    finally
+                    {
+                        if (tmpPath != null) try { System.IO.File.Delete(tmpPath); } catch { }
+                    }
+                });
+            }
+            catch { return null; }
+#else
+            await Task.CompletedTask;
+            return null;
+#endif
+        }
+
+        static async Task OpenWithExternalAppAsync(string filePath, string mimeType)
+        {
+#if ANDROID
+            try
+            {
+                var context = Android.App.Application.Context;
+                var file = new Java.IO.File(filePath);
+                // Use FileProvider to get a safe content:// URI
+                Android.Net.Uri? uri;
+                try
+                {
+                    uri = AndroidX.Core.Content.FileProvider.GetUriForFile(
+                        context,
+                        context.PackageName + ".fileprovider",
+                        file);
+                }
+                catch
+                {
+                    // Fallback to file:// URI if FileProvider not available
+                    uri = Android.Net.Uri.FromFile(file);
+                }
+                if (uri == null) return;
+
+                var intent = new Android.Content.Intent(Android.Content.Intent.ActionView);
+                intent.SetDataAndType(uri, mimeType);
+                intent.AddFlags(Android.Content.ActivityFlags.GrantReadUriPermission);
+                intent.AddFlags(Android.Content.ActivityFlags.NewTask);
+
+                // Exclude our own package from the chooser to avoid infinite loop
+                var ownPackage = context.PackageName;
+                var pm = context.PackageManager;
+                var resolveList = pm?.QueryIntentActivities(intent, Android.Content.PM.PackageInfoFlags.MatchDefaultOnly);
+                var excludeComponents = new List<Android.Content.ComponentName>();
+                if (resolveList != null && ownPackage != null)
+                {
+                    foreach (var info in resolveList)
+                    {
+                        var actInfo = info.ActivityInfo;
+                        if (actInfo?.PackageName == ownPackage)
+                        {
+                            excludeComponents.Add(new Android.Content.ComponentName(actInfo.PackageName, actInfo.Name!));
+                        }
+                    }
+                }
+
+                var chooser = Android.Content.Intent.CreateChooser(intent, "Ouvrir avec");
+                if (chooser != null)
+                {
+                    chooser.AddFlags(Android.Content.ActivityFlags.NewTask);
+                    if (excludeComponents.Count > 0)
+                    {
+                        chooser.PutExtra(Android.Content.Intent.ExtraExcludeComponents,
+                            excludeComponents.ToArray());
+                    }
+                    context.StartActivity(chooser);
+                }
+            }
+            catch { }
+            await Task.CompletedTask;
+#else
+            await Task.CompletedTask;
+#endif
         }
     }
 
