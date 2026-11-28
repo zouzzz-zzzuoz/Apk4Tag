@@ -98,7 +98,6 @@
 
   <ItemGroup>
     <MauiIcon Include="Resources\AppIcon\icon_b.png" />
-    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#512BD4" BaseSize="128,128" />
     <MauiImage Include="Resources\Images\*" />
     <MauiImage Update="Resources\Images\dotnet_bot.png" Resize="True" BaseSize="300,185" />
     <MauiFont Include="Resources\Fonts\*" />
@@ -122,7 +121,8 @@
 if (File.Exists(GeneratedFilePath) && (DateTime.Now - File.GetLastWriteTime(GeneratedFilePath)).TotalSeconds < 30)
   return true;
 
-var today = DateTime.Now.ToString("yyMMdd");
+var now = DateTime.Now;
+var today = now.ToString("yyMMdd");
 int counter = 1;
 if (File.Exists(CounterFilePath))
 {
@@ -132,7 +132,8 @@ if (File.Exists(CounterFilePath))
 }
 File.WriteAllText(CounterFilePath, today + "|" + counter);
 var version = "v" + today + "-" + counter;
-var code = "namespace test { internal static class BuildInfo { internal const string Version = \"" + version + "\"; } }\n";
+var buildDateTimeDisplay = now.ToString("dd-MM-yy 'à' HH'h'mm", System.Globalization.CultureInfo.GetCultureInfo("fr-FR"));
+var code = "namespace test { internal static class BuildInfo { internal const string Version = \"" + version + "\"; internal const string BuildDateTimeDisplay = \"" + buildDateTimeDisplay + "\"; } }\n";
 File.WriteAllText(GeneratedFilePath, code);
 ]]>
       </Code>

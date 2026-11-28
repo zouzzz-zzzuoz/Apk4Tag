@@ -89,6 +89,8 @@ namespace test
         public float X, Y;
         public string Text = "";
         public float Size = 10;
+        // Rotation from TAG code 16 header (degrees)
+        public float RotationDeg = 0f;
         public int LayerId { get; set; }
         public int LineType { get; set; }
         public int ColorIndex { get; set; }
@@ -202,6 +204,10 @@ namespace test
                             if (parts.Length >= 6 && TryParse(parts[5], out double ts))
                                 tsize = (float)ts;
 
+                            float rotationDeg = 0f;
+                            if (parts.Length >= 4 && TryParse(parts[3], out double rot))
+                                rotationDeg = (float)rot;
+
                             var sb = new System.Text.StringBuilder();
                             while (li + 1 < allLines.Count)
                             {
@@ -254,7 +260,7 @@ namespace test
                                      .Replace("%%%", "%");
                             raw = raw.Trim();
 
-                            var t = new TagText { X = (float)tx, Y = (float)ty, Text = raw, Size = tsize };
+                            var t = new TagText { X = (float)tx, Y = (float)ty, Text = raw, Size = tsize, RotationDeg = rotationDeg };
                             var (tLid, tLt, tCi) = ParseTrailing(parts, 3, model);
                             t.LayerId = tLid;
                             t.LineType = tLt;

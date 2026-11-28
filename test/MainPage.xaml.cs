@@ -27,7 +27,7 @@ namespace test
         public MainPage()
         {
             InitializeComponent();
-            VersionLabel.Text = BuildInfo.Version;
+            VersionLabel.Text = BuildInfo.BuildDateTimeDisplay;
             Viewer.Drawable = _drawable;
             // attach gestures programmatically
             var pan = new PanGestureRecognizer();
@@ -2151,6 +2151,9 @@ namespace test
                         canvas.FillColor = entColor;
                         canvas.Translate(t.X, t.Y);
                         canvas.Scale(1, -1);
+                        // Rotation dans l'espace texte (après inversion locale Y)
+                        if (Math.Abs(t.RotationDeg) > 0.001f)
+                            canvas.Rotate(-t.RotationDeg);
                         canvas.FontSize = t.Size;
                         var pendingRects = new List<RectF>();
                         for (int li = 0; li < lines.Length; li++)
